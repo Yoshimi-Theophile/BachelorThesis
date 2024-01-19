@@ -30,7 +30,7 @@ type TEnv = [(Term, LType)]
 
 printType :: LType -> String
 printType (TVar v) = v
-printType (TApp v1 v2) = "( " ++ v1 ++ " -> " ++ v2 ++ " )"
+printType (TApp v1 v2) = "( " ++ printType v1 ++ " -> " ++ printType v2 ++ " )"
 
 -- genSym :: Int -> String
 
