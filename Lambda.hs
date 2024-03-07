@@ -1,21 +1,5 @@
-{-
-
-To Do
-- Fix Type Unification
-- Add More Examples
-- make isLinear, isPlanar, isBridgeless
-
-note:
-
-    reduce (multiApp linOr [linTrue, linFalse])
-
-outputs
-
-    Lambda "x0000000" (Lambda "y00000000000000" (Lambda "k0000000000000000000000000000" (App (App (Var "k0000000000000000000000000000") (Var "x0000000")) (Var "y00000000000000"))))
-
-(i.e. make genSymFromList increment an existing number instead of adding one each time)
-
--}
+import Data.Char
+-- import Debug.Trace
 
 -- ===== Types =====
 
@@ -86,6 +70,7 @@ getBV (Lambda x t) = x : (getBV t)
 getBV (App t1 t2) = getBV t1 ++ getBV t2
 
 -- creates a new variable name that doesn't exist in a list of names
+{-
 genSymFromList :: String -> Int -> [String] -> String
 genSymFromList x n li = 
     if findVList x li 
@@ -93,6 +78,40 @@ genSymFromList x n li =
         if findVList newvar li
         then genSymFromList x (n+1) li
         else newvar
+    else x
+-}
+
+incrementStringAux :: String -> (String, Bool)
+incrementStringAux num =
+    case num of
+        "9" -> ("0", True)
+        c:[] -> ((chr ((ord c) + 1)):[], False)
+        '9':tail -> let (n, r) = incrementStringAux tail in
+            if r then ('0':n, True) else ('9':n, False)
+        c:tail -> let (n, r) = incrementStringAux tail in
+            if r then ((chr ((ord c) + 1)):n, True) else (c:n, False)
+
+incrementString :: String -> String
+incrementString x = let (ret, _) = incrementStringAux x in ret
+
+genSymIncrement :: String -> String -> [String] -> String
+genSymIncrement origin number li =
+    let newnum = incrementString number in
+        if findVList (origin ++ newnum) li
+        then genSymIncrement origin newnum li
+        else origin ++ newnum
+
+genSymAux :: String -> String -> [String] -> String
+genSymAux x acc li =
+    case x of
+        [] -> (genSymIncrement (acc ++ "_") "0" li)
+        c:tail -> if c == '_' then (genSymIncrement (acc ++ [c]) tail li)
+                  else genSymAux tail (acc ++ [c]) li 
+
+genSymFromList :: String -> [String] -> String
+genSymFromList x li = 
+    if findVList x li 
+    then genSymAux x "" li
     else x
 
 -- update variable x in term y with z
@@ -104,7 +123,7 @@ subst a (Var x) b =
 subst a (Lambda x t) b = 
     if a == x
     then (Lambda x t)
-    else let xnew = genSymFromList x 0 ([a] ++ getFV b ++ getFV t) in
+    else let xnew = genSymFromList x ([a] ++ getFV b ++ getFV t) in
         Lambda xnew (subst a (subst x t (Var xnew)) b)
 subst a (App t1 t2) b =
     App (subst a t1 b) (subst a t2 b)
@@ -125,44 +144,77 @@ reduce t = reduceHelper t []
 
 -- ===== Type Inference =====
 
--- unify is very probably wrong
+{-
+genEq :: [(LType, LType)] -> [(LType, LType)]
+genEq li = case li of
+    [] -> []
+    (TVar a, TVar b):tail -> (TVar a, TVar b):(genEq tail)
+    (TVar a, TApp r1 r2):tail -> (TVar a, TApp r1 r2):(genEq tail)
+    (TApp l1 l2, TVar b):tail -> (TVar b, TApp l1 l2):(genEq tail)
+    (TApp a b, TApp c d):tail -> genEq (c a):(b d):tail
+
 unify :: LType -> LType -> LType -- first type priority
 unify (TApp l1 l2) (TApp r1 r2) = TApp (unify l1 r1) (unify l2 r2)
 unify (TVar l) (TVar r) = TVar l
 unify (TApp l1 l2) (TVar r) = TApp l1 l2
 unify (TVar l) (TApp r1 r2) = TApp r1 r2
+-}
 
+-- update x in y with z
+typesubst :: String -> LType -> LType -> LType
+typesubst a ty ty2 = case ty of
+    TVar b -> if a == b then ty2 else TVar b
+    TApp tyl tyr -> TApp (typesubst a tyl ty2) (typesubst a tyl ty2)
+
+tenvsubst :: String -> TEnv -> LType -> TEnv
+tenvsubst a [] ty2 = []
+tenvsubst a ((t, ty):tail) ty2 = (t, typesubst a ty ty2) : (tenvsubst a tail ty2)
+
+teqsubst :: String -> [(LType, LType)] -> LType -> [(LType, LType)]
+teqsubst a [] ty3 = []
+teqsubst a ((ty1, ty2):tail) ty3 = (typesubst a ty1 ty3, typesubst a ty2 ty3) : (teqsubst a tail ty3)
+
+unify :: [(LType, LType)] -> LType -> TEnv -> (LType, TEnv)
+unify [] ty e = (ty, e)
+unify ((lhs,rhs):tail) ty e = case (lhs, rhs) of
+    (TVar a, TVar b) -> unify (teqsubst a tail (TVar b)) (typesubst a ty (TVar b)) (tenvsubst a e (TVar b))
+    (TVar a, TApp r1 r2) -> unify (teqsubst a tail (TApp r1 r2)) (typesubst a ty (TApp r1 r2)) (tenvsubst a e (TApp r1 r2))
+    (TApp l1 l2, TVar b) -> unify (teqsubst b tail (TApp l1 l2)) (typesubst b ty (TApp l1 l2)) (tenvsubst b e (TApp l1 l2))
+    (TApp l1 l2, TApp r1 r2) -> unify ((r1, l1):(l2, r2):tail) ty e
 
 red :: Term -> TEnv -> Int -> (LType, TEnv, Int)
 red (Var x) e n = 
-    let new = (x ++ show n) in
-        (TVar new, (Var x, TVar new) : e, n+1)
+    let new = (x ++ "_" ++ show n) in
+        blue (Var x) e (TVar new) (n+1)
 red (Lambda x t) e n =
     let (tyt, et, nt) = red t e n in
     let tyx = findTEnv (Var x) et nt in
         (TApp tyx tyt, et, nt+1)
 red (App t1 t2) e n =
-    let (tyt2, et2, nt2) = red t2 e n in
-    let gentype = ("a" ++ show nt2) in
-    let (tyt1, et1, nt1) = blue t1 et2 (TApp tyt2 (TVar gentype)) (nt2+1) in
-        (TVar gentype, et1, nt1)
+    let gentype = ("a_" ++ show n) in
+    blue (App t1 t2) e (TVar gentype) (n+1)
 
 blue :: Term -> TEnv -> LType -> Int -> (LType, TEnv, Int)
 blue (Var x) e ty n = 
     (ty, (Var x, ty) : e, n)
 blue (Lambda x t) e ty n = case ty of
-    TApp ty1 ty2 -> let (tyt, et, nt) = red t ((Var x, ty1) : e) n in
-                    (TApp ty1 (unify ty2 tyt), et, nt)
-    v -> (v, ((Lambda x t), v) : e, n)
+    TApp ty1 ty2 ->
+        let (tyL, eL, nL) = red (Lambda x t) e n in
+        let (tyEq, eEq) = unify [(tyL, TApp ty1 ty2)] (TApp ty1 ty2) eL in
+        trace (show tyL ++ "\n" ++ show (TApp ty1 ty2) ++ "\n" ++ show tyEq) (tyEq, eEq, nL)
+        --(TApp ty1 (unify ty2 tyt), et, nt)
+    v -> (v, ((Lambda x t), v) : e, n) -- fallback; should not happen
 blue (App t1 t2) e ty n =
     let (tyt2, et2, nt2) = red t2 e n in
     let (tyt1, et1, nt1) = blue t1 et2 (TApp tyt2 ty) nt2 in
-        (ty, et1, nt1)
+        case tyt1 of
+            TApp start end -> (end, et1, nt1)
+            def -> (ty, et1, nt1) -- fallback; should not happen
 
 getLinType :: Term -> LType
 getLinType (Var x) = TVar x
 getLinType (Lambda x t) = let (tyr, er, nr) = red (Lambda x t) [] 0 in tyr
-getLinType (App t1 t2) = let (tyr, er, nr) = blue (App t1 t2) [] (TVar "a") 0 in tyr
+getLinType (App t1 t2) = let (tyr, er, nr) = red (App t1 t2) [] 0 in tyr
 
 -- QoL functions
 
@@ -234,4 +286,17 @@ linNotGate :: Term = App cp1 linNot
 linOrGate :: Term = App cp2 linOr
 linAndGate :: Term = App cp2 linAnd
 
--- reduce test
+-- "((\\P.\\Q.(((P \\x.\\y.\\k.((k x) y)) Q) \\u.\\v.((\\B.(((B \\x.x) \\x.x) \\x.x) v) u)) \\x.\\y.\\k.((k x) y)) \\x.\\y.\\k.((k y) x))"
+-- reduce (multiApp linOr [linTrue, linFalse])
+-- Lambda "x_7" (Lambda "y_4" (Lambda "k_0" (App (App (Var "k_0") (Var "x_7")) (Var "y_4"))))
+
+-- reduce (App (Lambda "x" (Var "x")) (Var "x"))
+-- Var "x"
+
+-- "(\\P.\\x.\\y.((P y) x) \\x.\\y.(x y))"
+-- reduce (App linNot test1)
+-- Lambda "x_1" (Lambda "y_2" (App (Var "y_2") (Var "x_1")))
+
+allRules :: Term = Lambda "x" (multiApp (Lambda "y" (App (Var "x") (Var "y"))) [Lambda "a" (Var "a"), Lambda "b" (Var "b")])
+
+mini :: Term = Lambda "x" (multiApp (Lambda "y" (App (Var "x") (Var "y"))) [Lambda "a" (Var "a")])
