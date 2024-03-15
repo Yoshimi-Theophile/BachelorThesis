@@ -16,7 +16,7 @@ data LType
     | TApp LType LType
     deriving (Show, Eq)
 
-type TEnv = [(Term, LType)]
+type TEnv = [(String, LType)]
 
 -- ===== Printing =====
 
@@ -35,9 +35,8 @@ findEnv :: String -> Env -> Term
 findEnv s [] = Var s
 findEnv s ((v, t) : tail) = if s == v then t else findEnv s tail
 
-findTEnv :: Term -> TEnv -> Int -> LType
-findTEnv (Var s) [] n = TVar (s ++ show n)
-findTEnv s [] n = TVar ("c" ++ show n)
+findTEnv :: String -> TEnv -> Int -> LType
+findTEnv s [] n = TVar (s ++ show n)
 findTEnv s ((v, ty) : tail) n = if s == v then ty else findTEnv s tail n
 
 findVList :: String -> [String] -> Bool
@@ -45,15 +44,6 @@ findVList s [] = False
 findVList s (v : tail) = if s == v then True else findVList s tail
 
 -- ===== reduction =====
-
-{-
--- assume all bound variables are used (true for LLC)
--- gets free and bound variables from a term
-getFBV :: Term -> [String] 
-getFBV (Var x) = [x]
-getFBV (Lambda x t) = getFBV t
-getFBV (App t1 t2) = (getFBV t1) ++ (getFBV t2)
--}
 
 deleteAll :: (Eq t) => t -> [t] -> [t]
 deleteAll a [] = []
@@ -70,16 +60,6 @@ getBV (Lambda x t) = x : (getBV t)
 getBV (App t1 t2) = getBV t1 ++ getBV t2
 
 -- creates a new variable name that doesn't exist in a list of names
-{-
-genSymFromList :: String -> Int -> [String] -> String
-genSymFromList x n li = 
-    if findVList x li 
-    then let newvar = x ++ show n in
-        if findVList newvar li
-        then genSymFromList x (n+1) li
-        else newvar
-    else x
--}
 
 incrementStringAux :: String -> (String, Bool)
 incrementStringAux num =
@@ -128,14 +108,33 @@ subst a (Lambda x t) b =
 subst a (App t1 t2) b =
     App (subst a t1 b) (subst a t2 b)
 
+substalpha :: String -> Term -> Term -> Term
+substalpha a (Var x) b = Var x
+substalpha a (Lambda x t) b = 
+    if a == x
+    then (Lambda x t)
+    else let xnew = genSymFromList x ([a] ++ getFV b ++ getFV t) in
+        Lambda xnew (substalpha a (subst x t (Var xnew)) b)
+substalpha a (App t1 t2) b =
+    App (subst a t1 b) (subst a t2 b)
+
 -- Lambda x (substVar a t b)
+
+substreduce :: Term -> Term
+substreduce (Var x) = Var x
+substreduce (Lambda x t) = Lambda x (substreduce t)
+substreduce (App t1 t2) = case substreduce t1 of 
+    Lambda y t3 -> 
+        let t3new = subst y t3 t2 in
+        substreduce t3new
+    any -> App any (substreduce t2)
 
 reduceHelper :: Term -> Env -> Term
 reduceHelper (Var x) e = findEnv x e
 reduceHelper (Lambda x t) e = Lambda x (reduceHelper t e)
 reduceHelper (App t1 t2) e = case reduceHelper t1 e of 
     Lambda y t3 -> 
-        let t3new = subst y t3 t2 in
+        let t3new = substalpha y t3 t2 in
         reduceHelper t3new ((y, reduceHelper t2 e) : e)
     any -> App any (reduceHelper t2 e)
 
@@ -144,31 +143,15 @@ reduce t = reduceHelper t []
 
 -- ===== Type Inference =====
 
-{-
-genEq :: [(LType, LType)] -> [(LType, LType)]
-genEq li = case li of
-    [] -> []
-    (TVar a, TVar b):tail -> (TVar a, TVar b):(genEq tail)
-    (TVar a, TApp r1 r2):tail -> (TVar a, TApp r1 r2):(genEq tail)
-    (TApp l1 l2, TVar b):tail -> (TVar b, TApp l1 l2):(genEq tail)
-    (TApp a b, TApp c d):tail -> genEq (c a):(b d):tail
-
-unify :: LType -> LType -> LType -- first type priority
-unify (TApp l1 l2) (TApp r1 r2) = TApp (unify l1 r1) (unify l2 r2)
-unify (TVar l) (TVar r) = TVar l
-unify (TApp l1 l2) (TVar r) = TApp l1 l2
-unify (TVar l) (TApp r1 r2) = TApp r1 r2
--}
-
 -- update x in y with z
 typesubst :: String -> LType -> LType -> LType
 typesubst a ty ty2 = case ty of
     TVar b -> if a == b then ty2 else TVar b
-    TApp tyl tyr -> TApp (typesubst a tyl ty2) (typesubst a tyl ty2)
+    TApp tyl tyr -> TApp (typesubst a tyl ty2) (typesubst a tyr ty2)
 
 tenvsubst :: String -> TEnv -> LType -> TEnv
 tenvsubst a [] ty2 = []
-tenvsubst a ((t, ty):tail) ty2 = (t, typesubst a ty ty2) : (tenvsubst a tail ty2)
+tenvsubst a ((s, ty):tail) ty2 = (s, typesubst a ty ty2) : (tenvsubst a tail ty2)
 
 teqsubst :: String -> [(LType, LType)] -> LType -> [(LType, LType)]
 teqsubst a [] ty3 = []
@@ -182,39 +165,40 @@ unify ((lhs,rhs):tail) ty e = case (lhs, rhs) of
     (TApp l1 l2, TVar b) -> unify (teqsubst b tail (TApp l1 l2)) (typesubst b ty (TApp l1 l2)) (tenvsubst b e (TApp l1 l2))
     (TApp l1 l2, TApp r1 r2) -> unify ((r1, l1):(l2, r2):tail) ty e
 
-red :: Term -> TEnv -> Int -> (LType, TEnv, Int)
-red (Var x) e n = 
-    let new = (x ++ "_" ++ show n) in
-        blue (Var x) e (TVar new) (n+1)
-red (Lambda x t) e n =
-    let (tyt, et, nt) = red t e n in
-    let tyx = findTEnv (Var x) et nt in
-        (TApp tyx tyt, et, nt+1)
-red (App t1 t2) e n =
-    let gentype = ("a_" ++ show n) in
-    blue (App t1 t2) e (TVar gentype) (n+1)
+getbasename :: Term -> String
+getbasename (Var x) = x ++ "_"
+getbasename t = "a_"
 
-blue :: Term -> TEnv -> LType -> Int -> (LType, TEnv, Int)
-blue (Var x) e ty n = 
-    (ty, (Var x, ty) : e, n)
-blue (Lambda x t) e ty n = case ty of
+synth :: Term -> Int -> (LType, TEnv, Int)
+synth (Lambda x t) n =
+    let (tyt, et, nt) = synth t n in
+    let tyx = findTEnv x et nt in
+        (TApp tyx tyt, et, nt+1)
+synth t n =
+    let gentype = ((getbasename t) ++ show n) in
+    check t (TVar gentype) (n+1)
+
+check :: Term -> LType -> Int -> (LType, TEnv, Int)
+check (Var x) ty n = 
+    (ty, [(x, ty)], n)
+check (Lambda x t) ty n = case ty of
     TApp ty1 ty2 ->
-        let (tyL, eL, nL) = red (Lambda x t) e n in
+        let (tyL, eL, nL) = synth (Lambda x t) n in
         let (tyEq, eEq) = unify [(tyL, TApp ty1 ty2)] (TApp ty1 ty2) eL in
-        trace (show tyL ++ "\n" ++ show (TApp ty1 ty2) ++ "\n" ++ show tyEq) (tyEq, eEq, nL)
+        (tyEq, eEq, nL)
         --(TApp ty1 (unify ty2 tyt), et, nt)
-    v -> (v, ((Lambda x t), v) : e, n) -- fallback; should not happen
-blue (App t1 t2) e ty n =
-    let (tyt2, et2, nt2) = red t2 e n in
-    let (tyt1, et1, nt1) = blue t1 et2 (TApp tyt2 ty) nt2 in
+    v -> synth (Lambda x t) n -- fallback; should not happen
+check (App t1 t2) ty n =
+    let (tyt2, et2, nt2) = synth t2 n in
+    let (tyt1, et1, nt1) = check t1 (TApp tyt2 ty) nt2 in
         case tyt1 of
-            TApp start end -> (end, et1, nt1)
-            def -> (ty, et1, nt1) -- fallback; should not happen
+            TApp start end -> (end, et1 ++ et2, nt1)
+            def -> (ty, et1 ++ et2, nt1) -- fallback; should not happen
 
 getLinType :: Term -> LType
 getLinType (Var x) = TVar x
-getLinType (Lambda x t) = let (tyr, er, nr) = red (Lambda x t) [] 0 in tyr
-getLinType (App t1 t2) = let (tyr, er, nr) = red (App t1 t2) [] 0 in tyr
+getLinType (Lambda x t) = let (tyr, er, nr) = synth (Lambda x t) 0 in tyr
+getLinType (App t1 t2) = let (tyr, er, nr) = synth (App t1 t2) 0 in tyr
 
 -- QoL functions
 
