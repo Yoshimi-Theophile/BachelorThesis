@@ -176,24 +176,21 @@ synth (Lambda x t) n =
         (TApp tyx tyt, et, nt+1)
 synth t n =
     let gentype = ((getbasename t) ++ show n) in
-    check t (TVar gentype) (n+1)
+    check t (TVar gentype) [] (n+1)
 
-check :: Term -> LType -> Int -> (LType, TEnv, Int)
-check (Var x) ty n = 
-    (ty, [(x, ty)], n)
-check (Lambda x t) ty n = case ty of
-    TApp ty1 ty2 ->
-        let (tyL, eL, nL) = synth (Lambda x t) n in
-        let (tyEq, eEq) = unify [(tyL, TApp ty1 ty2)] (TApp ty1 ty2) eL in
-        (tyEq, eEq, nL)
-        --(TApp ty1 (unify ty2 tyt), et, nt)
-    v -> synth (Lambda x t) n -- fallback; should not happen
-check (App t1 t2) ty n =
+check :: Term -> LType -> TEnv -> Int -> (LType, TEnv, Int)
+check (Var x) ty e n = 
+    (ty, (x, ty):e, n)
+check (App t1 t2) ty e n =
     let (tyt2, et2, nt2) = synth t2 n in
-    let (tyt1, et1, nt1) = check t1 (TApp tyt2 ty) nt2 in
+    let (tyt1, et1, nt1) = check t1 (TApp tyt2 ty) (et2 ++ e) nt2 in
         case tyt1 of
             TApp start end -> (end, et1 ++ et2, nt1)
             def -> (ty, et1 ++ et2, nt1) -- fallback; should not happen
+check t ty e n =
+    let (tyL, eL, nL) = synth t n in
+    let (tyEq, eEq) = unify [(tyL, ty)] ty (eL ++ e) in
+    (tyEq, eEq, nL)
 
 getLinType :: Term -> LType
 getLinType (Var x) = TVar x
